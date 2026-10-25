@@ -3,6 +3,9 @@ CLAUDE.md
 
 # General
 *.env
+.env
+.venv/
+.pytest_cache/
 src/__pycache__/
 __pycache__/
 *.out
@@ -44,6 +47,9 @@ wandb/
 api_key.env
 datasets/
 catboost_info/
+
+# macOS
+.DS_Store
 
 # SLURM scripts (contain cluster-specific URLs)
 slurm_*.sh

@@ -3,25 +3,33 @@
 
 # AI agent framework
 camel-ai>=0.1.0
-litellm>=1.0.0
+litellm==1.75.9
+mcp>=1.3,<2.0
+tenacity>=8.2.0
 
 # Benchmarks
-relbench>=0.1.0
+relbench==1.1.0
 dbinfer-bench  # 4DBInfer datasets
 
 # Database
 duckdb>=0.9.0
+pyarrow>=24.0.0,<26.0.0
 
 # Data
 pandas>=2.0.0
-numpy>=2.0.0,<3.0.0
+numpy==1.26.0
 scikit-learn>=1.4.0
-shap>=0.47.0
+shap>=0.47.0,<0.50.0
 
 # Utilities
 pydantic>=2.0.0
 python-dotenv>=1.0.0
 colorama>=0.4.6
+
+# Predictive models used by the seven supported learner configurations
+lightgbm>=4.0.0
+xgboost>=2.0.0
+catboost>=1.2.0
 
 # Optional: local LLM inference
 # vllm>=0.2.0
