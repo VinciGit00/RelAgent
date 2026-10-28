@@ -1,5 +1,7 @@
 from typing import Optional, List, Dict, TYPE_CHECKING
 import logging
+import os
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import random
@@ -115,8 +117,14 @@ class RelBenchLoader:
             self.logger.info(f"Loading RelBench dataset: {dataset_name}")
         
         try:
+            source = dataset_name
+            data_root = os.environ.get("RELBENCH_DATA_DIR")
+            if data_root:
+                source = str(Path(data_root) / dataset_name)
+                if not (Path(source) / "manifest.yaml").is_file():
+                    raise FileNotFoundError(f"Dataset missing from local cache: {source}")
             self.dataset = (
-                relbench.load_dataset(dataset_name)
+                relbench.load_dataset(source)
                 if RELBENCH_V2_API
                 else get_dataset(dataset_name, download=download)
             )
@@ -127,11 +135,8 @@ class RelBenchLoader:
                 self.logger.error(f"Failed to load dataset {dataset_name}: {e}")
             raise ValueError(f"Failed to load dataset {dataset_name}: {e}")
         
-        # Get database from dataset
-        self.database = self.dataset.get_db()
-        if self.logger:
-            self.logger.info(f"Database loaded. Temporal splits: val={self.dataset.val_timestamp}, test={self.dataset.test_timestamp}")
-        
+        # Load the task before materializing its protected database. RelBench 3
+        # rebuilds the database on every get_db() call, so load it lazily once.
         # Load task if specified
         if task_name:
             self.load_task(task_name, download=download)
@@ -161,6 +166,7 @@ class RelBenchLoader:
                 else get_task(self.dataset_name, task_name, download=download)
             )
             self.task_name = task_name
+            self.database = None
             if self.logger:
                 self.logger.info(f"Successfully loaded task: {task_name}")
         except Exception as e:
@@ -176,7 +182,10 @@ class RelBenchLoader:
             Database: The RelBench database object
         """
         if self.database is None:
-            raise ValueError("Database not loaded. Ensure dataset was loaded successfully.")
+            source = self.task.dataset if self.task is not None else self.dataset
+            if source is None:
+                raise ValueError("Dataset not loaded")
+            self.database = source.get_db()
         return self.database
     
     def get_task(self) -> EntityTask:

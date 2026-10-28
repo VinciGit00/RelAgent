@@ -473,15 +473,9 @@ def setup_database_from_relbench(
     log = logger or logging.getLogger(__name__)
     
     try:
-        # IMPORTANT: when a task is loaded, use the task's dataset.get_db()
-        # so AutoCompleteTask target/anti-leakage removals are applied.
-        if hasattr(loader, "task") and loader.task is not None:
-            db = loader.task.dataset.get_db()
-        else:
-            db = loader.get_database()
+        # The loader caches the task-protected database, not an unprotected copy.
+        db = loader.get_database()
         dataset_name = loader.dataset_name
-        if upto_timestamp is not None:
-            db = db.upto(upto_timestamp)
     except Exception as e:
         log.error(f"Failed to get RelBench database path: {e}")
         raise
@@ -621,6 +615,7 @@ def setup_database_from_relbench(
     with con:
         con.execute("SET threads = 1")
         con.execute("SET memory_limit = '2GB'")
+        con.execute("SET max_temp_directory_size = '2GB'")
         try:
             # Get table names from RelBench database
             table_names = list(db.table_dict.keys())
@@ -638,7 +633,15 @@ def setup_database_from_relbench(
                 con.register(source_name, table_obj.df)
                 # Ensure we can switch between previous table/view definitions.
                 _drop_relation_if_exists(con, name)
-                con.execute(f"CREATE TABLE {name} AS SELECT * FROM {source_name};")
+                time_col = getattr(table_obj, "time_col", None)
+                if upto_timestamp is not None and time_col:
+                    quoted_time = '"' + time_col.replace('"', '""') + '"'
+                    con.execute(
+                        f"CREATE TABLE {name} AS SELECT * FROM {source_name} "
+                        f"WHERE {quoted_time} <= ?", [upto_timestamp]
+                    )
+                else:
+                    con.execute(f"CREATE TABLE {name} AS SELECT * FROM {source_name};")
                 con.unregister(source_name)
                 created_tables.append(name)
                 log.info("SQL table %s ready: %s rows", name, len(table_obj.df))

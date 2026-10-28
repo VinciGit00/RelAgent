@@ -73,6 +73,7 @@ class EvalWorkspace:
         self._conn = duckdb.connect(str(self._db_path))
         self._conn.execute("SET threads = 1")
         self._conn.execute("SET memory_limit = '512MB'")
+        self._conn.execute("SET max_temp_directory_size = '2GB'")
         self._conn.execute(self._SCHEMA_SQL)
 
     @property
