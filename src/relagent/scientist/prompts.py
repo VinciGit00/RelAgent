@@ -9,6 +9,11 @@ _COMMON_RULES_WRAPPED = r"""
 Rules:
 - Use SQL tools to explore the database. Do NOT guess table/column names.
 - Start by running SHOW TABLES and PRAGMA table_info('table') to understand the schema.
+- Aliases are scoped to each SELECT: aliases inside a subquery are not visible outside it.
+- GROUP BY only non-aggregate keys; never put COUNT/SUM/AVG or aliases for them in GROUP BY.
+- In DuckDB, convert timestamps to numeric seconds with epoch(timestamp_column), not CAST(timestamp_column AS DOUBLE).
+- eval_predictions and trials live only in query_eval_workspace, not the feature database.
+- After a validation trial limit message, finish immediately; do not request more trials.
 - train_table contains labeled training examples. Use it to learn patterns.
 - eval_table contains the current rows being scored (validation/test input keys).
 - Always anchor feature SQL on eval_table (not train_table) — eval_table is swapped with the correct split at each call.

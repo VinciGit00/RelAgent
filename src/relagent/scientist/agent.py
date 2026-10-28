@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
-import re
 import uuid
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -38,6 +37,7 @@ from .tools import (
     _write_trial_to_workspace,
 )
 from .trial_logger import TrialLogger
+from .usage import TokenBudgetExhausted, track_model_usage
 from .validation import ProgramSpec, execute_and_validate
 
 logger = logging.getLogger(__name__)
@@ -110,6 +110,9 @@ class ScientistAgent:
         use_duckdb_cheatsheet: bool = True,
         seven_models: bool = True,
         benchmark_name: str = "RelBench",
+        max_iterations: int = 8,
+        max_trials: Optional[int] = None,
+        total_token_budget: Optional[int] = None,
     ):
         self.loader = loader
         self.task_type = task_type
@@ -128,6 +131,9 @@ class ScientistAgent:
             (dataset_name, loader.task_name)
         )
         self.max_turns = max_turns
+        self.max_trials = max_trials
+        self.max_iterations = max_iterations
+        self.total_token_budget = total_token_budget
         self.eval_sample = eval_sample
         self.tool_output_limit = tool_output_limit
         self.step_timeout = float(step_timeout)
@@ -167,6 +173,8 @@ class ScientistAgent:
 
         # Set up DuckDB connection
         self.conn = duckdb.connect(database_path, read_only=True)
+        self.conn.execute("SET threads = 1")
+        self.conn.execute("SET memory_limit = '2GB'")
 
         # Set up evaluator
         self.evaluator = RelBenchEvaluator(
@@ -182,6 +190,7 @@ class ScientistAgent:
         # Create model
         model = self._create_model(model_name, port, temperature, max_tokens, api_base, api_key)
         self._model_backend = model
+        track_model_usage(model, self.run_dir, total_token_budget)
 
         # Create CAMEL ChatAgent
         system_prompt = get_scientist_system_prompt(
@@ -204,6 +213,7 @@ class ScientistAgent:
             mask_tool_output=False,
             prune_tool_calls_from_memory=False,
             agent_id=str(uuid.uuid4()),
+            max_iteration=max_iterations,
         )
         self.agent.step_timeout = self.step_timeout
         logger.info(f"Scientist agent step timeout set to {self.step_timeout:.1f}s")
@@ -332,7 +342,7 @@ class ScientistAgent:
             import litellm  # type: ignore
 
             litellm.num_retries = 2
-            _req_timeout = int(os.environ.get("LITELLM_REQUEST_TIMEOUT", "600"))
+            _req_timeout = int(os.environ.get("LITELLM_REQUEST_TIMEOUT", "60"))
             litellm.request_timeout = _req_timeout
             _debug_env = (
                 os.environ.get("LITELLM_LOG", "").upper() == "DEBUG"
@@ -360,6 +370,7 @@ class ScientistAgent:
                 "model_platform": ModelPlatformType.LITELLM,
                 "model_type": model_name,
                 "model_config_dict": model_config,
+                "timeout": float(os.environ.get("LITELLM_REQUEST_TIMEOUT", "60")),
             }
             if api_base:
                 create_kwargs["url"] = api_base
@@ -390,6 +401,8 @@ class ScientistAgent:
             logger.info(f"Initialized model via LiteLLM: {model_name} (base={api_base})")
             return model
         except Exception as e:
+            if model_name.startswith("anthropic/"):
+                raise RuntimeError("Cloud model initialization failed; local fallback disabled") from e
             logger.info(f"LiteLLM failed for '{model_name}': {e}. Trying ModelFactory fallback.")
 
         try:
@@ -448,6 +461,7 @@ class ScientistAgent:
             eval_workspace=self.eval_workspace,
             max_train_entities=self.max_train_entities,
             seven_models=self.seven_models,
+            max_trials=self.max_trials,
         )
         tools.append(validate_tool)
 
@@ -475,15 +489,34 @@ class ScientistAgent:
                     q_stripped = query.strip()
                     q_upper = q_stripped.upper()
                     is_select = q_upper.startswith("SELECT") or q_upper.startswith("WITH")
-                    has_limit = bool(re.search(r"\bLIMIT\s+\d+", q_stripped, re.IGNORECASE))
-                    if is_select and not has_limit:
-                        modified = q_stripped.rstrip(";") + f" LIMIT {max_rows}"
+                    if is_select:
+                        try:
+                            statements = duckdb.extract_statements(q_stripped)
+                            if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
+                                return "ERROR: Execute one SELECT query at a time."
+                        except Exception as exc:
+                            return f"ERROR: Invalid SQL: {exc}"
+                        modified = f"SELECT * FROM ({q_stripped.rstrip(';')}) AS preview LIMIT {max_rows}"
                         if call_args:
                             call_args = (modified,) + call_args[1:]
                         else:
                             kwargs["query"] = modified
 
-            result = original_func(*call_args, **kwargs)
+            try:
+                result = original_func(*call_args, **kwargs)
+            except Exception as exc:
+                result = f"ERROR: {exc}"
+            if is_execute_query and isinstance(result, str) and any(
+                marker in result.lower() for marker in ("error", "failed")
+            ):
+                result += (
+                    "\nRepair this query before retrying. Use only aliases declared in the "
+                    "current SELECT scope; aggregate expressions cannot be GROUP BY keys. "
+                    "This is DuckDB: use date + INTERVAL, not TIMESTAMPADD. "
+                    "eval_table contains evaluation keys, not predictions. Query trials and "
+                    "eval_predictions separately with query_eval_workspace; they are not "
+                    "feature tables and cannot be joined here."
+                )
 
             try:
                 if isinstance(result, pd.DataFrame):
@@ -623,8 +656,20 @@ class ScientistAgent:
         )
 
         loop_error: Optional[BaseException] = None
+        execute_prompt += (
+            f"\nBudget: at most {self.max_iterations} model responses per turn. "
+            f"Successful validations allowed: {self.max_trials if self.max_trials is not None else 'unlimited'}. "
+            "An invalid program can be repaired at most twice within the remaining token and time budget. "
+            f"Cumulative input plus output token budget: {self.total_token_budget or 'unlimited'}. "
+            "Inspect the essential schema, then validate a compact program early. "
+            "For a single-trial run, call validate_program within the first four model responses. "
+            "Finish once the validation budget is exhausted."
+        )
         try:
             self._run_agent_loop(execute_prompt, self.max_turns)
+            self._update_best_program()
+        except TokenBudgetExhausted as exc:
+            logger.info("%s; finalizing the best validated program", exc)
             self._update_best_program()
         except Exception as _loop_exc:
             loop_error = _loop_exc
@@ -793,6 +838,8 @@ class ScientistAgent:
                 upto_timestamp=None,
             )
             test_conn = duckdb.connect(test_db_path, read_only=True)
+            test_conn.execute("SET threads = 1")
+            test_conn.execute("SET memory_limit = '2GB'")
 
             test_table = self.loader.get_table("test", eval_sample=self.eval_sample)
             test_df = test_table.df.copy()

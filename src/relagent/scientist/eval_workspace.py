@@ -71,6 +71,8 @@ class EvalWorkspace:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = duckdb.connect(str(self._db_path))
+        self._conn.execute("SET threads = 1")
+        self._conn.execute("SET memory_limit = '512MB'")
         self._conn.execute(self._SCHEMA_SQL)
 
     @property
@@ -154,7 +156,11 @@ class EvalWorkspace:
 
     def execute_query(self, sql: str) -> pd.DataFrame:
         """Execute a read query and return results as a DataFrame."""
-        return self._conn.execute(sql).df()
+        statements = self._conn.extract_statements(sql)
+        if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
+            raise ValueError("Only one SELECT query is allowed in the evaluation workspace")
+        query = statements[0].query.strip().rstrip(";")
+        return self._conn.execute(f"SELECT * FROM ({query}) AS workspace_result LIMIT 500").df()
 
     def close(self) -> None:
         try:

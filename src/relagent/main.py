@@ -54,16 +54,15 @@ def _delete_scratch_db(db_path: str, logger=None) -> None:
 
 
 def _infer_task_type(loader: RelBenchLoader) -> str:
-    try:
-        from relbench.tasks import TaskType
-        tt = loader.task.task_type
-        if tt == TaskType.BINARY_CLASSIFICATION or tt == TaskType.MULTICLASS_CLASSIFICATION:
-            return "entity_classification"
-        if tt == TaskType.REGRESSION:
-            return "entity_regression"
-        raise ValueError(f"Unsupported task type: {tt}")
-    except ImportError:
+    # TaskType moved packages in RelBench 3. Its public enum values stayed
+    # stable; never silently classify a regression task on import failure.
+    tt = loader.task.task_type
+    value = getattr(tt, "value", tt)
+    if value in ("binary_classification", "multiclass_classification", "entity_classification"):
         return "entity_classification"
+    if value in ("regression", "entity_regression"):
+        return "entity_regression"
+    raise ValueError(f"Unsupported task type: {tt}")
 
 
 def _resolve_entity_col(loader: RelBenchLoader) -> str:
@@ -90,6 +89,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--task", default="user-churn", help="RelBench task name (e.g. user-churn)")
     p.add_argument("--model", default="gpt-5.2", help="LiteLLM model string")
     p.add_argument("--max_turns", type=int, default=60, help="Max agent turns (default 60)")
+    p.add_argument("--max_iterations", type=int, default=8, help="Maximum LLM calls per turn")
+    p.add_argument("--max_trials", type=int, default=None, help="Maximum validation attempts")
+    p.add_argument("--total_token_budget", type=int, default=None, help="Stop new requests once cumulative reported tokens reach this limit")
     p.add_argument("--artifact_dir", default=_DEFAULT_ARTIFACT_DIR,
                    help=f"Output directory for run artifacts (default: {_DEFAULT_ARTIFACT_DIR})")
     p.add_argument("--temperature", type=float, default=1.0, help="LLM sampling temperature")
@@ -211,6 +213,9 @@ def main() -> int:
         dataset_name=args.dataset,
         benchmark_name=benchmark_name,
         max_turns=args.max_turns,
+        max_iterations=args.max_iterations,
+        max_trials=args.max_trials,
+        total_token_budget=args.total_token_budget,
         artifact_dir=args.artifact_dir,
         port=args.port,
         temperature=args.temperature,

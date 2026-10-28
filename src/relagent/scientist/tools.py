@@ -121,9 +121,11 @@ def make_validate_program_wrapped_tool(
     max_train_entities: Optional[int] = None,
     seven_models: bool = False,
     fixed_model_choice: Optional[str] = None,
+    max_trials: Optional[int] = None,
 ) -> FunctionTool:
     """Create the validate_program FunctionTool for wrapped-model mode."""
     trial_counter = [0]
+    successful_trials = [0]
     best_score = [float("-inf")]
     if fixed_model_choice is not None:
         _effective_choices = (fixed_model_choice,)
@@ -198,8 +200,13 @@ def make_validate_program_wrapped_tool(
         except json.JSONDecodeError as e:
             return f"ERROR: Invalid JSON in model_config_json: {e}"
 
+        if max_trials is not None and (
+            successful_trials[0] >= max_trials or trial_counter[0] >= max_trials + 2
+        ):
+            return "Validation trial limit reached. Finish now using the best existing program."
         trial_counter[0] += 1
         trial_id = trial_counter[0]
+        logger.info("Validation trial %s started", trial_id)
 
         program = ProgramSpec(
             feature_queries=feature_queries,
@@ -229,10 +236,13 @@ def make_validate_program_wrapped_tool(
         )
 
         is_best = result.error is None and result.score > best_score[0]
+        if result.error is None:
+            successful_trials[0] += 1
         if is_best:
             best_score[0] = result.score
 
         trial_logger.log_trial(program, result, is_best=is_best, split=split)
+        logger.info("Validation trial %s finished: score=%s error=%s", trial_id, result.score, result.error)
 
         workspace_info: Optional[Dict[str, Any]] = None
         if eval_workspace is not None:
