@@ -273,13 +273,30 @@ def _run_feature_queries(
         # Pattern 2: event_col < e.<time_col> + INTERVAL  (future window via positive offset)
         # Both allow events that occurred AFTER the entity's creation time, leaking the target.
         _sql_no_comments = re.sub(r"--[^\n]*", "", sql)  # strip line comments before scanning
-        _future_ge = re.findall(
-            r"\b\w+\s*>=\s*e\s*\.\s*\w+",
-            _sql_no_comments,
+        _future_ge = []
+        _lower_bound_pattern = re.compile(
+            r"\b(?P<event>(?:\w+\.)?\w+)\s*>=\s*"
+            r"(?P<cutoff>e\s*\.\s*\w+)"
+            r"(?P<offset>\s*-\s*INTERVAL\s*'[^']+')?",
             re.IGNORECASE,
         )
-        # Filter out join-key equalities that also have >= (false positives rare, but check):
-        # A genuine false positive would be e.g. `ON t.x >= e.x` for range joins — flag anyway.
+        for match in _lower_bound_pattern.finditer(_sql_no_comments):
+            text = match.group(0)
+            if match.group("offset"):
+                # A bounded historical window is safe when the same event
+                # timestamp also has an upper bound before the eval cutoff:
+                #   event_ts >= e.date - INTERVAL '180 days'
+                #   AND event_ts < e.date
+                event = re.escape(match.group("event"))
+                cutoff = re.escape(match.group("cutoff"))
+                upper_bound = re.search(
+                    rf"\b{event}\s*<\s*{cutoff}\b",
+                    _sql_no_comments,
+                    re.IGNORECASE,
+                )
+                if upper_bound:
+                    continue
+            _future_ge.append(text)
         if _future_ge:
             raise ValueError(
                 f"Query '{name}' uses a forward-looking temporal filter: {_future_ge!r}. "
