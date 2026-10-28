@@ -175,6 +175,7 @@ class ScientistAgent:
         self.conn = duckdb.connect(database_path, read_only=True)
         self.conn.execute("SET threads = 1")
         self.conn.execute("SET memory_limit = '2GB'")
+        self.conn.execute("SET max_temp_directory_size = '2GB'")
 
         # Set up evaluator
         self.evaluator = RelBenchEvaluator(
@@ -840,6 +841,7 @@ class ScientistAgent:
             test_conn = duckdb.connect(test_db_path, read_only=True)
             test_conn.execute("SET threads = 1")
             test_conn.execute("SET memory_limit = '2GB'")
+            test_conn.execute("SET max_temp_directory_size = '2GB'")
 
             test_table = self.loader.get_table("test", eval_sample=self.eval_sample)
             test_df = test_table.df.copy()
