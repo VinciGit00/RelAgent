@@ -47,6 +47,7 @@ class TrialLogger:
             "model_config": program.model_config,
             "metrics": result.metrics,
             "primary_score": result.score,
+            "primary_metric": result.primary_metric_name,
             "is_best": is_best,
             "n_predictions": result.n_predictions,
             "shap_importance_top30": result.shap_importance[:30],

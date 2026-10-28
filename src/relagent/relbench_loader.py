@@ -246,7 +246,7 @@ class RelBenchLoader:
         if self.logger and self._task_get_table_calls[call_key] > 1:
             prev_ids = self._table_object_ids[call_key][-2]
             if prev_ids['table_id'] != hex(table_id) or (table_df_id and prev_ids['df_id'] != hex(table_df_id)):
-                self.logger.warning(
+                self.logger.debug(
                     f"RelBench task.get_table('{split}') returned DIFFERENT objects on call #{self._task_get_table_calls[call_key]}: "
                     f"Table ID changed: {prev_ids['table_id']} -> {hex(table_id)}, "
                     f"DF ID changed: {prev_ids['df_id']} -> {hex(table_df_id) if table_df_id else 'N/A'}"

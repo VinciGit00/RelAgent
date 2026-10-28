@@ -619,6 +619,8 @@ def setup_database_from_relbench(
     # Create DuckDB connection and materialize task-safe tables
     con, db_path = _connect_with_lock_fallback(db_path)
     with con:
+        con.execute("SET threads = 1")
+        con.execute("SET memory_limit = '2GB'")
         try:
             # Get table names from RelBench database
             table_names = list(db.table_dict.keys())
@@ -632,12 +634,14 @@ def setup_database_from_relbench(
                     log.warning(f"Skipping table {name}: missing DataFrame")
                     continue
                 source_name = f"_src_{name}"
+                log.info("Materializing SQL table %s (%s/%s)", name, len(created_tables) + 1, len(table_names))
                 con.register(source_name, table_obj.df)
                 # Ensure we can switch between previous table/view definitions.
                 _drop_relation_if_exists(con, name)
                 con.execute(f"CREATE TABLE {name} AS SELECT * FROM {source_name};")
                 con.unregister(source_name)
                 created_tables.append(name)
+                log.info("SQL table %s ready: %s rows", name, len(table_obj.df))
             
             # Add train table as a separate view for in-context learning
             # This table contains labeled examples that can help the model understand patterns
@@ -685,8 +689,7 @@ def setup_database_from_relbench(
                                 f"{len(eval_df)} validation rows"
                             )
                 except Exception as e:
-                    if log:
-                        log.warning(f"Failed to add eval_table: {e}")
+                    raise RuntimeError("Cannot start scientist without label-free eval_table") from e
             
             if log:
                 log.info(f"Created DuckDB database at {db_path} with {len(created_tables)} tables")

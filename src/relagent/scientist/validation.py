@@ -90,12 +90,25 @@ def _determine_primary_metric_name(
 ) -> str:
     """Return the human-readable name of the primary metric for this result."""
     if task_type == "entity_regression":
-        return (regression_primary_metric or "mae").lower()
+        preferred = (regression_primary_metric or "mae").lower()
+        choices = (preferred, "r_squared", "mae", "nmae") if preferred == "r2" else (preferred, "nmae", "mae")
+        for name in choices:
+            if name in metrics:
+                return name
+        raise ValueError(f"No supported regression metric returned: {list(metrics)}")
     # Classification: prefer threshold-free ranking metrics; mrr first for multi-class
     return next(
         (k for k in ("mrr", "roc_auc", "auroc", "average_precision", "macro_f1", "micro_f1", "f1", "accuracy") if k in metrics),
         (list(metrics.keys())[0] if metrics else "score"),
     )
+
+
+def _primary_score(task_type, metrics, regression_primary_metric="mae"):
+    name = _determine_primary_metric_name(task_type, metrics, regression_primary_metric)
+    value = float(metrics[name])
+    if not np.isfinite(value):
+        raise ValueError(f"Non-finite evaluation metric: {name}={value}")
+    return -value if task_type == "entity_regression" and name not in ("r2", "r_squared") else value
 
 
 # Row advisory for SQL feature queries: log when result is large (memory can spike on merge).
@@ -830,6 +843,11 @@ def _instantiate_model(
     # "categorical_features" is a meta-key that rides inside resolved_config from
     # _resolve_model_config; strip it so it never reaches a sklearn constructor.
     resolved_config = {k: v for k, v in resolved_config.items() if k != "categorical_features"}
+    if is_classification:
+        # Shared defaults are regression defaults. Let classifier estimators
+        # choose binary/multiclass objectives from the fitted labels.
+        resolved_config.pop("objective", None)
+        resolved_config.pop("loss_function", None)
     has_cat = bool(categorical_feature_indices)
 
     if model_choice == "logreg":
@@ -838,7 +856,7 @@ def _instantiate_model(
 
     if model_choice == "lightgbm":
         import lightgbm as lgb
-        cfg = {**resolved_config, "random_state": seed, "verbosity": -1}
+        cfg = {**resolved_config, "random_state": seed, "verbosity": -1, "n_jobs": 1}
         # RF boosting mode requires subsample_freq > 0
         if cfg.get("boosting_type") == "rf":
             cfg.setdefault("subsample_freq", 1)
@@ -846,7 +864,7 @@ def _instantiate_model(
 
     if model_choice in ("xgboost", "xgb_dart"):
         import xgboost as xgb
-        cfg = {**resolved_config, "random_state": seed, "verbosity": 0, "tree_method": "hist"}
+        cfg = {**resolved_config, "random_state": seed, "verbosity": 0, "tree_method": "hist", "n_jobs": 1}
         if model_choice == "xgb_dart":
             cfg["booster"] = "dart"
         if has_cat:
@@ -866,7 +884,7 @@ def _instantiate_model(
     if model_choice in ("gbdt", "rf", "dart", "goss"):
         import lightgbm as lgb
         cfg = {**resolved_config, "random_state": seed, "verbosity": -1,
-               "boosting_type": model_choice}
+               "boosting_type": model_choice, "n_jobs": 1}
         if model_choice == "rf":
             cfg.setdefault("subsample_freq", 1)
         return lgb.LGBMClassifier(**cfg) if is_classification else lgb.LGBMRegressor(**cfg)
@@ -890,6 +908,7 @@ def _instantiate_model(
             l2_leaf_reg=l2_leaf_reg,
             random_seed=seed,
             verbose=0,
+            thread_count=1,
         )
         if has_cat:
             ctor_kwargs["cat_features"] = list(categorical_feature_indices)
@@ -2153,36 +2172,7 @@ def execute_and_validate(
 
         metrics = evaluator.evaluate_all(split=split)
 
-        # Determine primary score (higher = better)
-        if task_type == "entity_regression":
-            metric_choice = (regression_primary_metric or "mae").lower()
-            if metric_choice == "r2":
-                score = metrics.get("r2", metrics.get("r_squared", float("-inf")))
-                if score == float("-inf"):
-                    logger.warning(
-                        "Regression objective set to R2 but evaluator did not return R2; "
-                        "falling back to negative MAE for scoring."
-                    )
-                    score = -metrics.get("mae", float("inf"))
-            else:
-                # MAE is minimized; negate so higher = better for search.
-                score = -metrics.get("mae", float("inf"))
-        else:
-            # Classification: prefer threshold-free ranking metrics when available.
-            # mrr for multi-class; roc_auc for binary.
-            score = metrics.get(
-                "mrr",
-                metrics.get(
-                    "roc_auc",
-                    metrics.get(
-                        "auroc",
-                        metrics.get(
-                            "average_precision",
-                            metrics.get("macro_f1", metrics.get("f1", metrics.get("accuracy", 0.0))),
-                        ),
-                    ),
-                ),
-            )
+        score = _primary_score(task_type, metrics, regression_primary_metric)
 
         # Step 5: Find best/worst predictions
         best_preds, worst_preds = _find_best_worst(
@@ -2398,23 +2388,7 @@ def _evaluate_pred_df_for_model(
             )
         metrics = evaluator.evaluate_all(split=split)
 
-        # Primary score
-        if task_type == "entity_regression":
-            metric_choice = (regression_primary_metric or "mae").lower()
-            if metric_choice == "r2":
-                score = metrics.get("r2", metrics.get("r_squared", float("-inf")))
-                if score == float("-inf"):
-                    score = -metrics.get("mae", float("inf"))
-            else:
-                score = -metrics.get("mae", float("inf"))
-        else:
-            score = metrics.get(
-                "mrr",
-                metrics.get(
-                    "roc_auc",
-                    metrics.get("auroc", metrics.get("average_precision", metrics.get("macro_f1", metrics.get("f1", metrics.get("accuracy", 0.0))))),
-                ),
-            )
+        score = _primary_score(task_type, metrics, regression_primary_metric)
 
         best_preds, worst_preds = _find_best_worst(
             val_df, pred_df, entity_col, target_col, task_type, features,
