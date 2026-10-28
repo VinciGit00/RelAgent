@@ -325,6 +325,7 @@ WRONG — these do NOT exist in DuckDB:
   ts - 7  or  ts - 7.0               -- use INTERVAL instead
   julianday(ts)                       -- use DATE_DIFF or EXTRACT(epoch …)
   DATEADD(day, 7, ts)                 -- use ts + INTERVAL '7 days'
+  TIMESTAMPADD(day, 7, ts)            -- use ts + INTERVAL '7 days'
   DATE_SUB(ts, INTERVAL 7 DAY)        -- use ts - INTERVAL '7 days'
   DATEDIFF(day, t1, t2)               -- use DATE_DIFF('day', t1, t2)
   TIMESTAMP_NS - INTEGER              -- always use INTERVAL, never bare numbers

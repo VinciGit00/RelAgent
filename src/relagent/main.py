@@ -6,16 +6,15 @@ import argparse
 import json
 import logging
 import os
-import sys
 import shlex
+import sys
+from pathlib import Path as _Path
 
 if __package__ in (None, "") and __name__ == "__main__":
     _src_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if _src_root not in sys.path:
         sys.path.insert(0, _src_root)
     __package__ = "relagent"
-
-from pathlib import Path as _Path
 
 from .relbench_loader import RelBenchLoader
 from .fourdbinfer_loader import FourDBInferLoader, fourdbinfer_cli_pair_registered

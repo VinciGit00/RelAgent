@@ -49,10 +49,11 @@ The key runtime dependencies are:
 
 ### API-hosted models (e.g. GPT-5.2 via LiteLLM proxy)
 
-```bash
-export LITELLM_API_KEY=your_key_here
-export LITELLM_API_BASE=https://your-litellm-proxy/
+Copy `.env.example` to `.env` and fill in the provider settings. RelAgent loads
+the project-local file automatically with `python-dotenv`, with the repository
+root `.env` as a fallback; already-exported variables take precedence.
 
+```bash
 python src/relagent/main.py \
   --dataset rel-amazon \
   --task user-churn \

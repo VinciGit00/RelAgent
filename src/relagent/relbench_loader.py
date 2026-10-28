@@ -6,11 +6,18 @@ import random
 
 try:
     from relbench.base import Table, Database, Dataset, EntityTask
-    from relbench.datasets import get_dataset
-    from relbench.tasks import get_task
+    try:
+        from relbench.datasets import get_dataset
+        from relbench.tasks import get_task
+        RELBENCH_V2_API = False
+    except ImportError:
+        import relbench
+
+        RELBENCH_V2_API = True
     RELBENCH_AVAILABLE = True
 except ImportError:
     RELBENCH_AVAILABLE = False
+    RELBENCH_V2_API = False
     # Create dummy types for type hints when RelBench is not available
     if TYPE_CHECKING:
         from typing import Any as Database, Any as Dataset, Any as EntityTask, Any as Table
@@ -108,7 +115,11 @@ class RelBenchLoader:
             self.logger.info(f"Loading RelBench dataset: {dataset_name}")
         
         try:
-            self.dataset = get_dataset(dataset_name, download=download)
+            self.dataset = (
+                relbench.load_dataset(dataset_name)
+                if RELBENCH_V2_API
+                else get_dataset(dataset_name, download=download)
+            )
             if self.logger:
                 self.logger.info(f"Successfully loaded dataset: {dataset_name}")
         except Exception as e:
@@ -144,7 +155,11 @@ class RelBenchLoader:
             self.logger.info(f"Loading task: {task_name} for dataset: {self.dataset_name}")
         
         try:
-            self.task = get_task(self.dataset_name, task_name, download=download)
+            self.task = (
+                self.dataset.load_task(task_name)
+                if RELBENCH_V2_API
+                else get_task(self.dataset_name, task_name, download=download)
+            )
             self.task_name = task_name
             if self.logger:
                 self.logger.info(f"Successfully loaded task: {task_name}")

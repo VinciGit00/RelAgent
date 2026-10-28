@@ -107,7 +107,7 @@ class ScientistAgent:
         time_col: Optional[str] = None,
         regression_primary_metric: str = "mae",
         use_eval_workspace: bool = True,
-        use_duckdb_cheatsheet: bool = False,
+        use_duckdb_cheatsheet: bool = True,
         seven_models: bool = True,
         benchmark_name: str = "RelBench",
     ):
@@ -349,16 +349,44 @@ class ScientistAgent:
             pass
 
         try:
+            model_config = {"temperature": temperature, "max_tokens": max_tokens}
+            # Ollama thinking models may return an empty `response` and put all
+            # output in `thinking`. LiteLLM's non-streaming Ollama JSON parser
+            # then attempts json.loads(""). Sending this through extra_body is
+            # required; a top-level `think=False` is ignored by LiteLLM.
+            if model_name.startswith("ollama/"):
+                model_config["extra_body"] = {"think": False}
             create_kwargs = {
                 "model_platform": ModelPlatformType.LITELLM,
                 "model_type": model_name,
-                "model_config_dict": {"temperature": temperature, "max_tokens": max_tokens},
+                "model_config_dict": model_config,
             }
             if api_base:
                 create_kwargs["url"] = api_base
             if api_key:
                 create_kwargs["api_key"] = api_key
             model = ModelFactory.create(**create_kwargs)
+            if model_name == "anthropic/claude-sonnet-4-6":
+                context_tokens = int(
+                    os.environ.get("RELAGENT_MODEL_CONTEXT_TOKENS", "200000")
+                )
+
+                class _KnownContextModelType(str):
+                    @property
+                    def token_limit(self) -> int:
+                        return context_tokens
+
+                    @property
+                    def value_for_tiktoken(self) -> str:
+                        return "gpt-4o-mini"
+
+                # CAMEL does not yet list Claude Sonnet 4.6 and otherwise uses
+                # an unsafe 999,999,999-token fallback. Preserve LiteLLM's
+                # provider-qualified model name while supplying a conservative
+                # explicit context limit to CAMEL's memory manager.
+                fixed_model_type = _KnownContextModelType(model_name)
+                model.model_type = fixed_model_type
+                model._model_type = fixed_model_type
             logger.info(f"Initialized model via LiteLLM: {model_name} (base={api_base})")
             return model
         except Exception as e:
