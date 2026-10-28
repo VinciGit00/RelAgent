@@ -25,6 +25,7 @@ import logging
 import datetime
 import yaml
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional, Tuple, List, Any, Dict
 import sys
@@ -501,9 +502,32 @@ def setup_database_from_relbench(
                 return cached_path
     
     if db_path is None:
-        scratch_root = os.environ.get("SCRATCH_DIR", "/scratch")
-        artifacts_dir = Path(scratch_root) / os.environ.get("USER", "user") / "artifacts"
-        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        configured_root = os.environ.get("RELAGENT_SCRATCH_DIR")
+        scratch_root = (
+            Path(configured_root) if configured_root else Path(tempfile.gettempdir())
+        )
+        artifacts_dir = scratch_root / "relagent" / "artifacts"
+        try:
+            artifacts_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            fallback = Path(tempfile.gettempdir()) / "relagent" / "artifacts"
+            if fallback == artifacts_dir:
+                raise
+            log.warning(
+                "RelAgent scratch directory %s is unavailable (%s: %s); "
+                "falling back to %s",
+                artifacts_dir,
+                type(error).__name__,
+                error,
+                fallback,
+            )
+            fallback.mkdir(parents=True, exist_ok=True)
+            artifacts_dir = fallback
+        log.info(
+            "Using RelAgent database cache: %s (%s)",
+            artifacts_dir,
+            "RELAGENT_SCRATCH_DIR" if configured_root else "system temporary directory",
+        )
         task_name = loader.task_name if hasattr(loader, 'task_name') and loader.task_name else "unknown"
         # Use consistent name for same dataset/task (instead of unique ID)
         if reuse_existing:
@@ -633,6 +657,36 @@ def setup_database_from_relbench(
                 except Exception as e:
                     if log:
                         log.warning(f"Failed to add train_table: {e}")
+
+                # The scientist prompt requires feature SQL to anchor on
+                # eval_table before the first validation tool call. Validation
+                # later swaps this relation for the requested split, but the
+                # exploratory SQL toolkit uses a separate read-only connection
+                # and therefore needs an initial physical table here.
+                try:
+                    eval_table = loader.get_table("val")
+                    if eval_table is not None and hasattr(eval_table, "df"):
+                        eval_df = eval_table.df.copy()
+                        target_col = getattr(loader.task, "target_col", None)
+                        if target_col and target_col in eval_df.columns:
+                            eval_df = eval_df.drop(columns=[target_col])
+                        eval_source_name = "_src_eval_table"
+                        con.register(eval_source_name, eval_df)
+                        _drop_relation_if_exists(con, "eval_table")
+                        con.execute(
+                            "CREATE TABLE eval_table AS "
+                            "SELECT * FROM _src_eval_table;"
+                        )
+                        con.unregister(eval_source_name)
+                        created_tables.append("eval_table")
+                        if log:
+                            log.info(
+                                "Added label-free eval_table with "
+                                f"{len(eval_df)} validation rows"
+                            )
+                except Exception as e:
+                    if log:
+                        log.warning(f"Failed to add eval_table: {e}")
             
             if log:
                 log.info(f"Created DuckDB database at {db_path} with {len(created_tables)} tables")
